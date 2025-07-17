@@ -1,0 +1,19 @@
+/* App custom styles */
+
+input[type="file"]::-webkit-file-upload-button {
+  background: #2563eb;
+  color: white;
+  border: none;
+  padding: 0.5em 1em;
+  border-radius: 0.25em;
+  cursor: pointer;
+}
+
+input[type="file"]::-ms-browse {
+  background: #2563eb;
+  color: white;
+  border: none;
+  padding: 0.5em 1em;
+  border-radius: 0.25em;
+  cursor: pointer;
+} 
