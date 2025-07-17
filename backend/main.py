@@ -6,6 +6,7 @@ import numpy as np
 import logging
 import io
 from typing import Optional
+import re
 
 from ocr import OCRProcessor
 from pii_detector import PIIDetector
@@ -115,66 +116,85 @@ async def mask_pii(
                 }
             })
         
-        # Step 2: Get full text for PII detection
-        full_text = ocr_processor.get_full_text(extracted_text)
-        logger.info(f"Extracted text: {full_text[:100]}...")
+        # Debug: Log extracted text regions
+        logger.info(f"Extracted {len(extracted_text)} text regions")
+        for i, region in enumerate(extracted_text[:10]):  # Log first 10 regions
+            logger.info(f"Region {i}: '{region['text']}' at {region['bbox']}")
         
-        # Step 3: Detect PII in the text
-        logger.info("Detecting PII...")
-        detected_pii = pii_detector.get_all_pii(full_text)
+        # Step 2: Detect PII directly in OCR regions (NEW APPROACH)
+        logger.info("Detecting PII in OCR regions...")
+        detected_pii = pii_detector.detect_pii_in_ocr_regions(extracted_text)
         
-        # Step 4: Map PII detection to image regions
-        pii_regions = []
-        for pii_item in detected_pii:
-            # Find corresponding text regions in the image
-            for text_item in extracted_text:
-                if pii_item['text'].lower() in text_item['text'].lower():
-                    pii_regions.append({
-                        'type': pii_item['type'],
-                        'text': pii_item['text'],
-                        'bbox': text_item['bbox'],
-                        'confidence': pii_item['confidence']
-                    })
-                    break
+        logger.info(f"Found {len(detected_pii)} PII regions to mask")
+        pii_info = [f"{r['type']}: '{r['text']}'" for r in detected_pii]
+        logger.info(f"Detected PII: {pii_info}")
         
-        logger.info(f"Found {len(pii_regions)} PII regions to mask")
+        # Enhanced debugging: Log all text regions for analysis
+        logger.info("=== ALL EXTRACTED TEXT REGIONS ===")
+        for i, region in enumerate(extracted_text):
+            logger.info(f"Region {i+1}: '{region['text']}' | Position: {region['bbox']} | Confidence: {region['confidence']:.2f}")
         
-        # Step 5: Mask the image
+        # Log specific name-related regions
+        logger.info("=== NAME-RELATED REGIONS ===")
+        for i, region in enumerate(extracted_text):
+            text_lower = region['text'].lower()
+            if any(keyword in text_lower for keyword in ['name', 'son', 'daughter', 'wife', 's/o', 'd/o', 'w/o']):
+                logger.info(f"Potential name region {i+1}: '{region['text']}' | Position: {region['bbox']}")
+        
+        # Log DOB regions for positional analysis
+        logger.info("=== DOB REGIONS ===")
+        for i, region in enumerate(extracted_text):
+            if re.search(r'\b(?:0?[1-9]|[12]\d|3[01])[/-](?:0?[1-9]|1[0-2])[/-](?:19|20)\d{2}\b', region['text']):
+                logger.info(f"DOB region {i+1}: '{region['text']}' | Position: {region['bbox']}")
+        
+        # Log colon-containing regions for form field detection
+        logger.info("=== COLON-CONTAINING REGIONS ===")
+        for i, region in enumerate(extracted_text):
+            if ':' in region['text']:
+                logger.info(f"Colon region {i+1}: '{region['text']}' | Position: {region['bbox']}")
+        
+        # Log regions that might be split names
+        logger.info("=== POTENTIAL SPLIT NAME REGIONS ===")
+        for i, region in enumerate(extracted_text):
+            text = region['text'].strip()
+            if (len(text) > 2 and len(text) < 20 and 
+                text.replace(' ', '').isalpha() and 
+                not any(skip in text.lower() for skip in ['date', 'birth', 'address', 'phone', 'email', 'government', 'india'])):
+                logger.info(f"Potential name part {i+1}: '{region['text']}' | Position: {region['bbox']}")
+        
+        logger.info("=== END DEBUG INFO ===")
+        
+        # Step 3: Mask the image
         logger.info(f"Masking image using method: {mask_method}")
         masked_image = image_masker.mask_pii_regions(
-            image, pii_regions, method=mask_method, padding=padding
+            image, detected_pii, method=mask_method, padding=padding
         )
         
-        # Step 6: Add indicators if requested
+        # Step 4: Add indicators if requested
         if show_indicators:
-            masked_image = image_masker.add_redaction_indicators(masked_image, pii_regions)
+            masked_image = image_masker.add_redaction_indicators(masked_image, detected_pii)
         
-        # Step 7: Convert to base64
+        # Step 5: Convert to base64
         masked_image_b64 = image_masker.image_to_base64(masked_image)
         
-        # Step 8: Get statistics
-        stats = image_masker.get_masking_statistics(pii_regions)
+        # Step 6: Get statistics
+        stats = image_masker.get_masking_statistics(detected_pii)
         
-        # Step 9: Create comparison image
+        # Step 7: Create comparison image
         comparison_image = image_masker.create_comparison_image(image, masked_image)
         comparison_b64 = image_masker.image_to_base64(comparison_image)
         
-        logger.info(f"Processing completed. Masked {stats['total_regions']} regions")
-        
         return JSONResponse({
-            "message": "Image processed successfully",
+            "message": "PII masking completed successfully",
             "masked_image": masked_image_b64,
             "comparison_image": comparison_b64,
             "statistics": stats,
-            "detected_pii": pii_regions,
-            "extracted_text": full_text
+            "detected_pii": detected_pii
         })
         
-    except HTTPException:
-        raise
     except Exception as e:
         logger.error(f"Error processing image: {e}")
-        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error processing image: {str(e)}")
 
 @app.post("/test")
 async def test_endpoint():
